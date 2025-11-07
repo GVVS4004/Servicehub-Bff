@@ -96,7 +96,7 @@ app.post("/api/auth/login", (req, res) => {
     res.cookie("userEmail", email, {
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000, // 1 day
-      sameSite: "lax",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       secure: process.env.NODE_ENV === "production",
     });
 
