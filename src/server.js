@@ -22,6 +22,8 @@ app.use(express.json());
 // In-memory storage
 const users = [];
 const sseConnections = new Map(); // email -> response object
+const notifications = new Map(); // notificationId -> notification data
+const userNotifications = new Map(); // email -> array of notification IDs
 
 // =====================
 // AUTH ROUTES
@@ -200,6 +202,211 @@ app.post("/api/notifications/send", authenticateToken, (req, res) => {
     });
   } catch (error) {
     console.error("Send notification error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Send bulk notifications (with targetUsers array)
+app.post("/api/notifications/send-bulk", authenticateToken, (req, res) => {
+  try {
+    const notificationData = req.body;
+
+    const {
+      source,
+      notificationId,
+      title,
+      content,
+      priority,
+      type,
+      targetUsers,
+      metadata,
+      trackingEnabled,
+      trackingCallbackUrl,
+    } = notificationData;
+
+    // Validate required fields
+    if (!targetUsers || !Array.isArray(targetUsers) || targetUsers.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "targetUsers array is required and cannot be empty" });
+    }
+
+    if (!title || !content) {
+      return res
+        .status(400)
+        .json({ error: "title and content are required" });
+    }
+
+    // Store the notification data
+    const storedNotificationId = notificationId || Date.now().toString();
+    notifications.set(storedNotificationId, {
+      ...notificationData,
+      notificationId: storedNotificationId,
+      createdAt: new Date().toISOString(),
+    });
+
+    const results = {
+      success: [],
+      failed: [],
+      total: targetUsers.length,
+      notificationId: storedNotificationId,
+    };
+
+    // Send notification to each target user
+    targetUsers.forEach((targetUser) => {
+      const { email, userId, name } = targetUser;
+
+      if (!email) {
+        results.failed.push({
+          userId: userId || "unknown",
+          name: name || "unknown",
+          reason: "Missing email",
+        });
+        return;
+      }
+
+      // Check if user is connected
+      const connection = sseConnections.get(email);
+
+      if (!connection) {
+        results.failed.push({
+          email,
+          userId,
+          name,
+          reason: "User not connected",
+        });
+        return;
+      }
+
+      // Create user-specific notification
+      const userNotification = {
+        id: `${storedNotificationId}-${userId || email}`,
+        notificationId: storedNotificationId,
+        source,
+        title,
+        content,
+        priority: priority || "medium",
+        type: type || "info",
+        timestamp: new Date().toISOString(),
+        read: false,
+        metadata: {
+          ...metadata,
+          targetUser: { userId, name, email },
+        },
+        trackingEnabled: trackingEnabled || false,
+        trackingCallbackUrl,
+      };
+
+      try {
+        // Send notification via SSE
+        connection.write(
+          `data: ${JSON.stringify({
+            type: "notification",
+            data: userNotification,
+          })}\n\n`
+        );
+
+        // Store notification for this user
+        if (!userNotifications.has(email)) {
+          userNotifications.set(email, []);
+        }
+        userNotifications.get(email).push(userNotification);
+
+        results.success.push({
+          email,
+          userId,
+          name,
+          notificationId: userNotification.id,
+        });
+
+        console.log(`Notification sent to ${email}:`, {
+          id: userNotification.id,
+          title,
+          priority,
+        });
+      } catch (error) {
+        results.failed.push({
+          email,
+          userId,
+          name,
+          reason: "Failed to send notification",
+          error: error.message,
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      message: "Bulk notifications processed",
+      results,
+    });
+  } catch (error) {
+    console.error("Send bulk notifications error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Get user's notifications
+app.get("/api/notifications/user", authenticateToken, (req, res) => {
+  try {
+    const userEmail = req.user.email;
+    const userNotifs = userNotifications.get(userEmail) || [];
+
+    res.json({
+      notifications: userNotifs,
+      count: userNotifs.length,
+      unreadCount: userNotifs.filter(n => !n.read).length,
+    });
+  } catch (error) {
+    console.error("Get user notifications error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Mark notification as read
+app.post("/api/notifications/mark-read/:notificationId", authenticateToken, (req, res) => {
+  try {
+    const { notificationId } = req.params;
+    const userEmail = req.user.email;
+
+    const userNotifs = userNotifications.get(userEmail);
+    if (!userNotifs) {
+      return res.status(404).json({ error: "No notifications found" });
+    }
+
+    const notification = userNotifs.find(n => n.id === notificationId);
+    if (!notification) {
+      return res.status(404).json({ error: "Notification not found" });
+    }
+
+    notification.read = true;
+    notification.readAt = new Date().toISOString();
+
+    res.json({ success: true, notification });
+  } catch (error) {
+    console.error("Mark notification as read error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Track notification open (callback endpoint)
+app.post("/api/notifications/track-open", (req, res) => {
+  try {
+    const { notificationId, userId, email, openedAt } = req.body;
+
+    console.log("Notification opened:", {
+      notificationId,
+      userId,
+      email,
+      openedAt: openedAt || new Date().toISOString(),
+    });
+
+    // Here you would typically store this tracking data
+    // For now, we'll just log it
+
+    res.json({ success: true, message: "Tracking recorded" });
+  } catch (error) {
+    console.error("Track notification open error:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
