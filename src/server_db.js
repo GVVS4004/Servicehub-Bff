@@ -27,7 +27,7 @@ console.log(process.env.CORS_ORIGIN);
 
 app.use(
   cors({
-    origin: "http://localhost:5174",
+    origin: process.env.CORS_ORIGIN || "http://localhost:5174",
     credentials: true,
   })
 );
